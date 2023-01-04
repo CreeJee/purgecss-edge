@@ -1,10 +1,9 @@
-import { selectAll } from "hast-util-select/index.js";
-import { text } from "stream/consumers";
-import { httpGet } from "../lib/httpGet.js";
-import { parseWithSelector, Element, Text, Node } from "../lib/parseWIthSelector.js";
 
+import { PurgeCSS } from "purgecss";
+import { getByteSize } from "../lib/getByteSize.js";
+import { httpGet } from "../lib/httpGet.js";
+import { parseWithSelector, Element, ParentNode } from "../lib/parseWIthSelector.js";
 interface LinkStructure {
-    element: Element,
     src: string,
     media: string,
 }
@@ -13,54 +12,48 @@ interface LinkStructureWithIndex extends LinkStructure {
 }
 interface StyleTagInfo {
     value: string,
-    node: Node
-    parent: Node
 }
 
-const stringSplice = function (self: string, index: number, count: number,) {
-    if (index < 0) {
-        index += self.length;
-        if (index < 0)
-            index = 0;
-    }
-    return self.slice(0, index) + self.slice(index + count);
-}
+const purgeCss = new PurgeCSS();
 export const serializeTag = async (body: string) => {
-    const document = await parseWithSelector(body);
-    const externalPipedTag = selectAll("link, style", document);
+    const $ = await parseWithSelector(body);
+    const externalPipedTag = $("link, style");
     const linkTags: LinkStructureWithIndex[] = [];
     // css조합시 스타일링
     const styleInfoList: StyleTagInfo[] = []
 
     for (let index = 0; index < externalPipedTag.length; index++) {
-        const element = externalPipedTag[index];
-        const prop = element.properties ?? {};
-        switch (element.tagName) {
-            case "link":
-                if (Array.isArray(prop.rel) && prop.rel.includes('stylesheet')) {
-                    const src = (typeof prop.href === 'string' ? prop.href : "");
-                    const media = (typeof prop.media === 'string' ? prop.media : "");
-                    console.log(element);
-                    linkTags.push({
-                        element,
-                        src,
-                        media,
-                        index,
-                    });
-                }
-                break;
-            case "style":
-                const textNode = element.children[0] as Text
-                if (textNode.position) {
+        const element = externalPipedTag.get(index);
+        const $element = externalPipedTag.eq(index);
+        let isRemove = false;
+        if (element) {
+            const prop = element?.attribs;
+            switch (element?.tagName) {
+                case "link":
+                    if (prop.rel === 'stylesheet') {
+                        const src = (typeof prop.href === 'string' ? prop.href : "");
+                        const media = (typeof prop.media === 'string' ? prop.media : "");
+                        linkTags.push({
+                            src,
+                            media,
+                            index,
+                        });
+                        isRemove = true;
+                    }
+                    break;
+                case "style":
+                    const text = $element.text()
                     styleInfoList[index] = {
-                        value: textNode.value,
-                        node: textNode,
-                        parent: element
+                        value: text,
                     };
-                }
-                break;
-            default:
-                break;
+                    isRemove = true;
+                    break;
+                default:
+                    break;
+            }
+            if (isRemove) {
+                $element.remove();
+            }
         }
     }
     await Promise.allSettled(
@@ -68,8 +61,6 @@ export const serializeTag = async (body: string) => {
             const positionMapper = (value: string) => {
                 styleInfoList[v.index] = {
                     value,
-                    node: v.element,
-                    parent: v.element
                 }
             }
             return httpGet(v.src).then(
@@ -80,23 +71,31 @@ export const serializeTag = async (body: string) => {
             )
         })
     )
-    const composedText = styleInfoList.reduce((accr, v) => v.value + accr, "");
-    const beforeSize = new TextEncoder().encode(composedText).length;
-    console.log(`beforeSize = ${beforeSize}`);
 
+    const beforeStyle = styleInfoList.reduce((accr, { value }) => accr + "\n" + value, "");
+    console.log(`beforeSize = ${getByteSize(beforeStyle)}`);
 
-    //TODO: 생성된 스타일들을 노드 단위에서 기존노드 제거후 purged된 컨탠츠와 함께 비교
-    for (let index = 0; index < styleInfoList.length; index++) {
-        const data = styleInfoList[index];
-        if (data) {
-            const { node, value } = data
-            const pos = node.position;
-            if (pos) {
-                const start = pos.start.offset ?? 0;
-                const end = pos.end.offset ? pos.end.offset - start : start;
-                console.log(start, end)
-                body = stringSplice(body, start, end)
+    const purgedResult = await purgeCss.purge({
+        fontFace: true,
+        keyframes: true,
+        content: [
+            {
+                extension: 'html',
+                raw: body
             }
-        }
+        ],
+        css: [
+            {
+                raw: beforeStyle,
+                name: "purgecss-generated"
+            }
+        ]
+    })
+    const mergedStyle = purgedResult[0].css
+    console.log(`afterSize = ${getByteSize(mergedStyle)}`);
+    const head = $("head");
+    if (head) {
+        head.append(`<style id="purge-css-generated">${mergedStyle}</style>`)
     }
+    return $.html();
 }
