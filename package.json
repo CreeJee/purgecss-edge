@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "cheerio": "^1.0.0-rc.12",
+    "lightningcss": "^1.17.1",
     "purgecss": "^5.0.0"
   }
 }

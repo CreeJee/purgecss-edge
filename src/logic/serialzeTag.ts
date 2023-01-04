@@ -3,6 +3,7 @@ import { PurgeCSS } from "purgecss";
 import { getByteSize } from "../lib/getByteSize.js";
 import { httpGet } from "../lib/httpGet.js";
 import { parseWithSelector, Element, ParentNode } from "../lib/parseWIthSelector.js";
+import { transform } from "lightningcss"
 interface LinkStructure {
     src: string,
     media: string,
@@ -91,8 +92,16 @@ export const serializeTag = async (body: string) => {
             }
         ]
     })
-    const mergedStyle = purgedResult[0].css
-    console.log(`afterSize = ${getByteSize(mergedStyle)}`);
+    const purgedStyle = purgedResult[0].css;
+    console.log(`afterPurge = ${getByteSize(purgedStyle)}`)
+    const { code: minifiedStyle } = transform({
+        code: Buffer.from(purgedStyle),
+        filename: 'foo',
+        minify: true
+
+    })
+    const mergedStyle = minifiedStyle.toString('utf-8')
+    console.log(`afterMinify = ${getByteSize(mergedStyle)}`);
     const head = $("head");
     if (head) {
         head.append(`<style id="purge-css-generated">${mergedStyle}</style>`)
