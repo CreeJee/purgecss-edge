@@ -2,13 +2,12 @@
 import { PurgeCSS } from "purgecss";
 import { getByteSize } from "../lib/getByteSize.js";
 import { httpGet } from "../lib/httpGet.js";
-import { parseWithSelector, Element, ParentNode } from "../lib/parseWIthSelector.js";
-import { transform } from "lightningcss"
-import { text } from "stream/consumers";
-import { writeFileSync, writeSync } from "fs";
+import { parseWithSelector, Element } from "../lib/parseWIthSelector.js";
+import { transform as cssTransform } from "lightningcss"
 import { resolve } from "path";
 import { baseDir } from "../config.js";
 import { toUtf8Buffer } from "../lib/toBuffer.js";
+import { jsTransformSync } from "../lib/transform/jsTransform.js";
 
 
 
@@ -30,7 +29,7 @@ const textCompositor = (listRef: TagInfo[]) => {
     return listRef.reduce((accr, { value, path }) => accr + `\n/** [path:${path}]*/` + value, "");
 }
 const scriptCompositor = (listRef: TagInfo[]) => {
-    return listRef.reduce((accr, { value, path }) => accr + `<script data-original-path="${path}">${value}</script>\n`, "");
+    return listRef.reduce((accr, { value, path }) => accr + `\n<script data-original-path="${path}">${jsTransformSync(value)}</script>`, "");
 }
 const toMergeContent = async <T>(
     tagStructures: ExternalTagStructure[],
@@ -97,18 +96,21 @@ export const serializeTag = async (body: string) => {
                     break;
                 case "script":
                     const src = $element.prop("src");
-                    if (typeof src === "string" && src.length > 0) {
-                        scriptTags.push({
-                            index,
-                            src
-                        })
-                    } else {
-                        scriptInfoList[index] = {
-                            value: $element.text(),
-                            path: `[initial / ${index}]`
+                    const type = prop.type;
+                    if (type === "text/javascript" || !type) {
+                        if (typeof src === "string" && src.length > 0) {
+                            scriptTags.push({
+                                index,
+                                src
+                            })
+                        } else {
+                            scriptInfoList[index] = {
+                                value: $element.text(),
+                                path: `[initial / ${index}]`
+                            }
                         }
+                        isRemove = true;
                     }
-                    isRemove = true;
                     break;
                 default:
                     break;
@@ -120,9 +122,9 @@ export const serializeTag = async (body: string) => {
     }
 
     const beforeStyle = await toMergeContent(linkTags, styleInfoList, textCompositor);
-    const postProcessedScript = await toMergeContent(scriptTags, scriptInfoList, scriptCompositor);
-    const $preProcessedJS = $(postProcessedScript)
-    $('body').append(postProcessedScript);
+    const preProcessedScript = await toMergeContent(scriptTags, scriptInfoList, scriptCompositor);
+    const $preProcessedJS = $(preProcessedScript)
+    $('body').append($preProcessedJS);
     console.log(`beforeSize = ${getByteSize(beforeStyle)}`);
 
     const rawMergedHTML = $.html();
@@ -144,10 +146,7 @@ export const serializeTag = async (body: string) => {
     })
     const purgedStyle = purgedResult[0].css;
     console.log(`afterPurge = ${getByteSize(purgedStyle)}`)
-
-    // writeFileSync(testFileDir, toUtf8Buffer(purgedStyle))
-    // debugger;
-    const { code: minifiedStyle } = transform({
+    const { code: minifiedStyle } = cssTransform({
         code: toUtf8Buffer(purgedStyle),
         filename: 'foo',
         minify: true,
@@ -158,6 +157,6 @@ export const serializeTag = async (body: string) => {
     if (head) {
         head.append(`<style id="purge-css-generated">${mergedStyle}</style>`)
     }
-    // $preProcessedJS.remove();
+    $preProcessedJS.remove();
     return $.html();
 }
