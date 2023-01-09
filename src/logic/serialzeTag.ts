@@ -4,24 +4,69 @@ import { getByteSize } from "../lib/getByteSize.js";
 import { httpGet } from "../lib/httpGet.js";
 import { parseWithSelector, Element, ParentNode } from "../lib/parseWIthSelector.js";
 import { transform } from "lightningcss"
-interface LinkStructure {
+import { text } from "stream/consumers";
+import { writeFileSync, writeSync } from "fs";
+import { resolve } from "path";
+import { baseDir } from "../config.js";
+import { toUtf8Buffer } from "../lib/toBuffer.js";
+
+
+
+interface ExternalTagStructure {
     src: string,
-    media: string,
-}
-interface LinkStructureWithIndex extends LinkStructure {
     index: number
 }
-interface StyleTagInfo {
-    value: string,
+interface CssStructure extends ExternalTagStructure {
+    media: string,
 }
+interface JsStructure extends ExternalTagStructure {
 
+}
+interface TagInfo {
+    value: string,
+    path: string
+}
+const textCompositor = (listRef: TagInfo[]) => {
+    return listRef.reduce((accr, { value, path }) => accr + `\n/** [path:${path}]*/` + value, "");
+}
+const scriptCompositor = (listRef: TagInfo[]) => {
+    return listRef.reduce((accr, { value, path }) => accr + `<script data-original-path="${path}">${value}</script>\n`, "");
+}
+const toMergeContent = async <T>(
+    tagStructures: ExternalTagStructure[],
+    listRef: TagInfo[],
+    compositor: (listRef: TagInfo[]) => T
+) => {
+    await Promise.allSettled(
+        tagStructures.map(v => {
+            const positionMapper = (value: string) => {
+                listRef[v.index] = {
+                    value,
+                    path: v.src
+                }
+            }
+            return httpGet(v.src).then(
+                positionMapper,
+                () => positionMapper('')
+            ).catch(
+                () => positionMapper('')
+            )
+        })
+    )
+    return compositor(listRef);
+}
 const purgeCss = new PurgeCSS();
+
+
+const testFileDir = resolve(baseDir, './test.css');
 export const serializeTag = async (body: string) => {
     const $ = await parseWithSelector(body);
-    const externalPipedTag = $("link, style");
-    const linkTags: LinkStructureWithIndex[] = [];
+    const externalPipedTag = $("link[rel='stylesheet'], style, script");
+    const linkTags: CssStructure[] = [];
+    const scriptTags: JsStructure[] = [];
     // css조합시 스타일링
-    const styleInfoList: StyleTagInfo[] = []
+    const styleInfoList: TagInfo[] = []
+    const scriptInfoList: TagInfo[] = []
 
     for (let index = 0; index < externalPipedTag.length; index++) {
         const element = externalPipedTag.get(index);
@@ -46,7 +91,23 @@ export const serializeTag = async (body: string) => {
                     const text = $element.text()
                     styleInfoList[index] = {
                         value: text,
+                        path: `[initial / ${index}]`
                     };
+                    isRemove = true;
+                    break;
+                case "script":
+                    const src = $element.prop("src");
+                    if (typeof src === "string" && src.length > 0) {
+                        scriptTags.push({
+                            index,
+                            src
+                        })
+                    } else {
+                        scriptInfoList[index] = {
+                            value: $element.text(),
+                            path: `[initial / ${index}]`
+                        }
+                    }
                     isRemove = true;
                     break;
                 default:
@@ -57,32 +118,21 @@ export const serializeTag = async (body: string) => {
             }
         }
     }
-    await Promise.allSettled(
-        linkTags.map(v => {
-            const positionMapper = (value: string) => {
-                styleInfoList[v.index] = {
-                    value,
-                }
-            }
-            return httpGet(v.src).then(
-                positionMapper,
-                () => positionMapper('')
-            ).catch(
-                () => positionMapper('')
-            )
-        })
-    )
 
-    const beforeStyle = styleInfoList.reduce((accr, { value }) => accr + "\n" + value, "");
+    const beforeStyle = await toMergeContent(linkTags, styleInfoList, textCompositor);
+    const postProcessedScript = await toMergeContent(scriptTags, scriptInfoList, scriptCompositor);
+    const $preProcessedJS = $(postProcessedScript)
+    $('body').append(postProcessedScript);
     console.log(`beforeSize = ${getByteSize(beforeStyle)}`);
 
+    const rawMergedHTML = $.html();
     const purgedResult = await purgeCss.purge({
         fontFace: true,
         keyframes: true,
         content: [
             {
                 extension: 'html',
-                raw: body
+                raw: rawMergedHTML
             }
         ],
         css: [
@@ -94,11 +144,13 @@ export const serializeTag = async (body: string) => {
     })
     const purgedStyle = purgedResult[0].css;
     console.log(`afterPurge = ${getByteSize(purgedStyle)}`)
-    const { code: minifiedStyle } = transform({
-        code: Buffer.from(purgedStyle),
-        filename: 'foo',
-        minify: true
 
+    // writeFileSync(testFileDir, toUtf8Buffer(purgedStyle))
+    // debugger;
+    const { code: minifiedStyle } = transform({
+        code: toUtf8Buffer(purgedStyle),
+        filename: 'foo',
+        minify: true,
     })
     const mergedStyle = minifiedStyle.toString('utf-8')
     console.log(`afterMinify = ${getByteSize(mergedStyle)}`);
@@ -106,5 +158,6 @@ export const serializeTag = async (body: string) => {
     if (head) {
         head.append(`<style id="purge-css-generated">${mergedStyle}</style>`)
     }
+    // $preProcessedJS.remove();
     return $.html();
 }

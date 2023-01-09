@@ -1,0 +1,1 @@
+export const toUtf8Buffer = (s: string) => Buffer.from(s, 'utf-8') 
