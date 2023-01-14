@@ -7,6 +7,8 @@ import { transform as cssTransform } from "lightningcss"
 import { resolve } from "path";
 import { baseDir } from "../config.js";
 import { toUtf8Buffer } from "../lib/toBuffer.js";
+import { performanceLogger } from "../lib/logger.js";
+import { CheerioAPI } from "cheerio";
 import { jsTransformSync } from "../lib/transform/jsTransform.js";
 
 
@@ -29,7 +31,7 @@ const textCompositor = (listRef: TagInfo[]) => {
     return listRef.reduce((accr, { value, path }) => accr + `\n/** [path:${path}]*/` + value, "");
 }
 const scriptCompositor = (listRef: TagInfo[]) => {
-    return listRef.reduce((accr, { value, path }) => accr + `\n<script data-original-path="${path}">${jsTransformSync(value)}</script>`, "");
+    return listRef.reduce((accr, { value, path }) => accr + `\n<script data-original-path="${jsTransformSync(path)}">${value}</script>`, "");
 }
 const toMergeContent = async <T>(
     tagStructures: ExternalTagStructure[],
@@ -56,6 +58,9 @@ const toMergeContent = async <T>(
 }
 const purgeCss = new PurgeCSS();
 
+const gatheringResource = ($doc: CheerioAPI) => {
+
+}
 
 const testFileDir = resolve(baseDir, './test.css');
 export const serializeTag = async (body: string) => {
@@ -120,14 +125,18 @@ export const serializeTag = async (body: string) => {
             }
         }
     }
-
-    const beforeStyle = await toMergeContent(linkTags, styleInfoList, textCompositor);
-    const preProcessedScript = await toMergeContent(scriptTags, scriptInfoList, scriptCompositor);
+    const afterRequest = performanceLogger('request')
+    const [beforeStyle, preProcessedScript] = await Promise.all([
+        toMergeContent(linkTags, styleInfoList, textCompositor),
+        toMergeContent(scriptTags, scriptInfoList, scriptCompositor)
+    ]);
+    afterRequest();
     const $preProcessedJS = $(preProcessedScript)
     $('body').append($preProcessedJS);
-    console.log(`beforeSize = ${getByteSize(beforeStyle)}`);
+    // console.log(`beforeSize = ${getByteSize(beforeStyle)}`);
 
     const rawMergedHTML = $.html();
+    const afterPurge = performanceLogger('purge')
     const purgedResult = await purgeCss.purge({
         fontFace: true,
         keyframes: true,
@@ -144,15 +153,16 @@ export const serializeTag = async (body: string) => {
             }
         ]
     })
+    afterPurge();
     const purgedStyle = purgedResult[0].css;
-    console.log(`afterPurge = ${getByteSize(purgedStyle)}`)
+    // console.log(`afterPurge = ${getByteSize(purgedStyle)}`)
     const { code: minifiedStyle } = cssTransform({
         code: toUtf8Buffer(purgedStyle),
         filename: 'foo',
         minify: true,
     })
-    const mergedStyle = minifiedStyle.toString('utf-8')
-    console.log(`afterMinify = ${getByteSize(mergedStyle)}`);
+    const mergedStyle = minifiedStyle.toString('utf-8');
+    // console.log(`afterMinify = ${getByteSize(mergedStyle)}`);
     const head = $("head");
     if (head) {
         head.append(`<style id="purge-css-generated">${mergedStyle}</style>`)
